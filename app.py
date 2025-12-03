@@ -11,9 +11,11 @@ import io
 
 from database import (
     engine, init_db, search_psalms, get_all_authors,
-    get_all_genres, get_all_musical_terms, get_statistics
+    get_all_genres, get_all_musical_terms, get_statistics,
+    get_greek_text, get_lxx_statistics
 )
-from models import Psalm
+from models import Psalm, GreekText
+from lxx_alignment import format_dual_number
 
 
 # Page configuration
@@ -33,6 +35,27 @@ st.markdown("""
         font-family: 'Times New Roman', 'SBL Hebrew', serif;
         color: #1e3a8a;
         line-height: 1.8;
+    }
+    .greek-text {
+        direction: ltr;
+        font-size: 1.2em;
+        font-family: 'Times New Roman', 'Galatia SIL', 'Gentium', serif;
+        color: #047857;
+        line-height: 1.8;
+    }
+    .comparison-box {
+        background-color: #f0fdf4;
+        border-left: 4px solid #10b981;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-radius: 0.25rem;
+    }
+    .diff-box {
+        background-color: #fef3c7;
+        border-left: 4px solid #f59e0b;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-radius: 0.25rem;
     }
     .psalm-card {
         background-color: #f8fafc;
@@ -64,6 +87,10 @@ st.markdown("""
         margin-top: 1.5rem;
         margin-bottom: 1rem;
     }
+    .lxx-number {
+        color: #059669;
+        font-weight: 500;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -81,22 +108,45 @@ def format_genres(genres: List[str]) -> str:
     return badges
 
 
-def create_dataframe(psalms: List[Psalm]) -> pd.DataFrame:
+def create_dataframe(psalms: List[Psalm], include_greek: bool = True) -> pd.DataFrame:
     """Convert psalm list to pandas DataFrame for display and export"""
     data = []
-    for psalm in psalms:
-        data.append({
-            "Psalm": psalm.psalm_number,
-            "Author": psalm.author_attribution or "Anonymous",
-            "Genres": ", ".join(psalm.genres) if psalm.genres else "",
-            "Acrostic": psalm.acrostic,
-            "Hebrew Heading": psalm.hebrew_heading or "",
-            "English Heading": psalm.english_heading_translation or "",
-            "Key Themes": psalm.key_themes or "",
-            "NT Quotations": "Yes" if psalm.has_nt_quotation else "No",
-            "Selah Count": psalm.selah_count,
-            "Musical Terms": psalm.musical_liturgical_terms or "",
-        })
+
+    with Session(engine) as session:
+        for psalm in psalms:
+            row = {
+                "MT Psalm": psalm.psalm_number,
+                "Author (MT)": psalm.author_attribution or "Anonymous",
+                "Genres": ", ".join(psalm.genres) if psalm.genres else "",
+                "Acrostic": psalm.acrostic,
+                "Hebrew Heading": psalm.hebrew_heading or "",
+                "English Heading (MT)": psalm.english_heading_translation or "",
+                "Key Themes": psalm.key_themes or "",
+                "NT Quotations": "Yes" if psalm.has_nt_quotation else "No",
+                "Selah Count": psalm.selah_count,
+                "Musical Terms (MT)": psalm.musical_liturgical_terms or "",
+            }
+
+            # Add Greek text data if available
+            if include_greek:
+                greek_text = get_greek_text(session, psalm.id)
+                if greek_text:
+                    row["LXX Psalm"] = greek_text.lxx_psalm_number
+                    row["Greek Heading"] = greek_text.greek_heading or ""
+                    row["English Heading (LXX)"] = greek_text.english_translation_heading or ""
+                    row["Heading Agrees"] = "Yes" if greek_text.heading_agrees_with_mt else "No"
+                    row["Author (LXX)"] = greek_text.author_attribution_lxx or ""
+                    row["Davidic (LXX)"] = "Yes" if greek_text.davidic_attribution_lxx else "No"
+                else:
+                    row["LXX Psalm"] = ""
+                    row["Greek Heading"] = ""
+                    row["English Heading (LXX)"] = ""
+                    row["Heading Agrees"] = ""
+                    row["Author (LXX)"] = ""
+                    row["Davidic (LXX)"] = ""
+
+            data.append(row)
+
     return pd.DataFrame(data)
 
 
@@ -106,7 +156,12 @@ def display_psalm_card(psalm: Psalm):
         col1, col2, col3 = st.columns([1, 5, 2])
 
         with col1:
-            st.markdown(f"### {psalm.psalm_number}")
+            # Show dual numbering if LXX data available
+            if psalm.lxx_psalm_number:
+                st.markdown(f"### {psalm.psalm_number}")
+                st.markdown(f'<span class="lxx-number">LXX {psalm.lxx_psalm_number}</span>', unsafe_allow_html=True)
+            else:
+                st.markdown(f"### {psalm.psalm_number}")
 
         with col2:
             st.markdown(f"**{psalm.author_attribution or 'Anonymous'}**")
@@ -247,18 +302,57 @@ def detail_page():
             st.error("Psalm not found")
             return
 
-        # Header
-        st.title(f"Psalm {psalm.psalm_number}")
+        # Get Greek text if available
+        greek_text = get_greek_text(session, psalm.id)
+
+        # Header with dual numbering
+        if greek_text:
+            st.title(f"Psalm {psalm.psalm_number} (LXX {greek_text.lxx_psalm_number})")
+        else:
+            st.title(f"Psalm {psalm.psalm_number}")
 
         # Hebrew heading (RTL)
         if psalm.hebrew_heading:
-            st.markdown('<h3 class="section-header">Hebrew Superscription</h3>', unsafe_allow_html=True)
+            st.markdown('<h3 class="section-header">📜 Hebrew Superscription (MT)</h3>', unsafe_allow_html=True)
             st.markdown(f'<div class="hebrew-text">{psalm.hebrew_heading}</div>', unsafe_allow_html=True)
 
         # English heading
         if psalm.english_heading_translation:
-            st.markdown('<h3 class="section-header">English Translation of Heading</h3>', unsafe_allow_html=True)
+            st.markdown('<h3 class="section-header">English Translation of Hebrew Heading</h3>', unsafe_allow_html=True)
             st.info(psalm.english_heading_translation)
+
+        # Greek (LXX) superscription section
+        if greek_text:
+            st.markdown("---")
+            st.markdown('<h3 class="section-header">🏛️ Greek Superscription (LXX - Rahlfs-Hanhart)</h3>', unsafe_allow_html=True)
+
+            if greek_text.greek_heading:
+                st.markdown(f'<div class="greek-text">{greek_text.greek_heading}</div>', unsafe_allow_html=True)
+
+                if greek_text.english_translation_heading:
+                    st.caption(f"*Translation: {greek_text.english_translation_heading}*")
+
+                # Show agreement/difference indicator
+                if greek_text.heading_agrees_with_mt:
+                    st.markdown('<div class="comparison-box">✅ <strong>Heading agrees with Hebrew</strong></div>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<div class="diff-box">⚠️ <strong>Heading differs from Hebrew</strong></div>', unsafe_allow_html=True)
+                    if greek_text.heading_differences_note:
+                        st.info(f"**Note:** {greek_text.heading_differences_note}")
+
+                # Show Davidic attribution comparison if different
+                mt_davidic = psalm.author_attribution == "David"
+                lxx_davidic = greek_text.davidic_attribution_lxx
+
+                if mt_davidic != lxx_davidic:
+                    st.markdown("#### Attribution Comparison")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown(f"**MT:** {'✅ Davidic' if mt_davidic else '❌ Not Davidic'}")
+                    with col2:
+                        st.markdown(f"**LXX:** {'✅ Davidic' if lxx_davidic else '❌ Not Davidic'}")
+            else:
+                st.caption("*No superscription in LXX*")
 
         # Metadata columns
         st.markdown('<h3 class="section-header">Metadata</h3>', unsafe_allow_html=True)
@@ -403,6 +497,53 @@ def statistics_page():
 
         st.markdown("---")
 
+        # LXX Comparison Statistics
+        st.markdown("## Hebrew (MT) vs Greek (LXX) Comparison")
+        lxx_stats = get_lxx_statistics(session)
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.markdown('<div class="stat-box">', unsafe_allow_html=True)
+            st.metric("Davidic (MT)", lxx_stats.get("total_davidic_mt", 0))
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with col2:
+            st.markdown('<div class="stat-box">', unsafe_allow_html=True)
+            st.metric("Davidic (LXX)", lxx_stats.get("total_davidic_lxx", 0))
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with col3:
+            st.markdown('<div class="stat-box">', unsafe_allow_html=True)
+            st.metric("Headings Agree", lxx_stats.get("heading_agreements", 0))
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with col4:
+            st.markdown('<div class="stat-box">', unsafe_allow_html=True)
+            st.metric("Headings Differ", lxx_stats.get("heading_differences", 0))
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # Davidic attribution comparison chart
+        st.markdown("### Davidic Attribution Differences")
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            davidic_comparison = pd.DataFrame({
+                "Category": ["Both MT & LXX", "MT Only", "LXX Only"],
+                "Count": [
+                    lxx_stats.get("davidic_in_both", 0),
+                    lxx_stats.get("davidic_in_mt_only", 0),
+                    lxx_stats.get("davidic_in_lxx_only", 0)
+                ]
+            })
+            st.bar_chart(davidic_comparison.set_index("Category"))
+
+        with col2:
+            st.dataframe(davidic_comparison, hide_index=True, use_container_width=True)
+            st.caption(f"LXX adds David to {lxx_stats.get('davidic_in_lxx_only', 0)} additional psalms")
+
+        st.markdown("---")
+
         # Interesting queries
         st.markdown("## Quick Insights")
 
@@ -450,10 +591,14 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### About")
     st.sidebar.info(
-        "**Book of Psalms Database** v1.0\n\n"
-        "A scholarly tool for exploring the 150 Psalms with "
-        "Hebrew text, genre classification, authorship data, "
-        "and New Testament quotations.\n\n"
+        "**Book of Psalms Database** v2.0\n\n"
+        "A scholarly tool for exploring the 150 Psalms with:\n\n"
+        "• Hebrew (MT) & Greek (LXX) texts\n"
+        "• Dual MT/LXX numbering\n"
+        "• Genre classification\n"
+        "• Authorship data (MT vs LXX)\n"
+        "• New Testament quotations\n"
+        "• Rahlfs-Hanhart Septuagint\n\n"
         "Built with Python, SQLModel, and Streamlit."
     )
 

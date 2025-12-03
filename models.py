@@ -67,6 +67,7 @@ class Psalm(SQLModel, table=True):
 
     # Relationships
     psalm_genres: List[PsalmGenre] = Relationship(back_populates="psalm")
+    greek_texts: List["GreekText"] = Relationship(back_populates="psalm")
 
     @property
     def genres(self) -> List[str]:
@@ -84,3 +85,66 @@ class Psalm(SQLModel, table=True):
         if not self.musical_liturgical_terms:
             return []
         return [term.strip() for term in self.musical_liturgical_terms.split(",")]
+
+    @property
+    def lxx_psalm_number(self) -> Optional[str]:
+        """Get LXX psalm number(s) for this MT psalm"""
+        if self.greek_texts:
+            return self.greek_texts[0].lxx_psalm_number
+        return None
+
+    @property
+    def has_greek_text(self) -> bool:
+        """Check if psalm has Greek text data"""
+        return len(self.greek_texts) > 0
+
+
+class GreekText(SQLModel, table=True):
+    """Greek (LXX) text data for Psalms - Rahlfs-Hanhart edition"""
+    __tablename__ = "greek_texts"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    # Edition info
+    edition: str = Field(default="Rahlfs-Hanhart", index=True)
+
+    # LXX numbering (can be compound like "9", "114/115", "146/147")
+    lxx_psalm_number: str = Field(index=True)
+
+    # Link to Hebrew/MT psalm
+    mt_psalm_id: int = Field(foreign_key="psalms.id", index=True)
+
+    # Greek superscription
+    greek_heading: Optional[str] = Field(default=None)
+    english_translation_heading: Optional[str] = Field(default=None)
+
+    # Comparison with MT
+    heading_agrees_with_mt: bool = Field(default=True)
+    heading_differences_note: Optional[str] = Field(default=None)
+
+    # LXX-specific attribution and notes
+    davidic_attribution_lxx: bool = Field(default=False)
+    author_attribution_lxx: Optional[str] = Field(default=None)
+    historical_note_lxx: Optional[str] = Field(default=None)
+    musical_terms_lxx: Optional[str] = Field(default=None)
+
+    # Additional scholarly notes
+    manuscript_notes: Optional[str] = Field(default=None)
+
+    # Timestamps
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Relationships
+    psalm: Psalm = Relationship(back_populates="greek_texts")
+
+
+class PsalmNumberAlignment(SQLModel, table=True):
+    """Mapping table between MT and LXX psalm numbering systems"""
+    __tablename__ = "psalm_number_alignments"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    mt_psalm_number: int = Field(unique=True, index=True)
+    lxx_psalm_number: str = Field(index=True)
+    alignment_type: str = Field(index=True)  # "exact", "combined", "split", "offset"
+    notes: Optional[str] = Field(default=None)

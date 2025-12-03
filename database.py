@@ -4,7 +4,7 @@ Database initialization and session management.
 from sqlmodel import create_engine, SQLModel, Session, select
 from typing import Generator, List, Optional
 from pathlib import Path
-from models import Psalm, Genre, PsalmGenre
+from models import Psalm, Genre, PsalmGenre, GreekText, PsalmNumberAlignment
 
 # Database path
 DB_PATH = Path(__file__).parent / "psalms.db"
@@ -204,3 +204,118 @@ def get_statistics(session: Session) -> dict:
         "total_selah": total_selah,
         "psalms_with_selah": psalms_with_selah,
     }
+
+
+# ========================================
+# Greek Text (LXX) Functions
+# ========================================
+
+def add_greek_text(
+    session: Session,
+    mt_psalm_id: int,
+    lxx_psalm_number: str,
+    greek_data: dict
+) -> GreekText:
+    """
+    Add Greek (LXX) text data for a psalm.
+
+    Args:
+        session: Database session
+        mt_psalm_id: ID of the MT psalm
+        lxx_psalm_number: LXX psalm number (can be compound like "114/115")
+        greek_data: Dictionary with Greek text fields
+
+    Returns:
+        Created GreekText object
+    """
+    greek_text = GreekText(
+        mt_psalm_id=mt_psalm_id,
+        lxx_psalm_number=lxx_psalm_number,
+        **greek_data
+    )
+    session.add(greek_text)
+    session.commit()
+    session.refresh(greek_text)
+    return greek_text
+
+
+def get_greek_text(session: Session, mt_psalm_id: int) -> Optional[GreekText]:
+    """Get Greek text for a given MT psalm ID"""
+    return session.exec(
+        select(GreekText).where(GreekText.mt_psalm_id == mt_psalm_id)
+    ).first()
+
+
+def get_lxx_statistics(session: Session) -> dict:
+    """
+    Generate statistics comparing MT and LXX.
+
+    Returns dict with:
+        - psalms_with_greek_text: Number of psalms with LXX data
+        - heading_agreements: Number where heading agrees
+        - heading_differences: Number where heading differs
+        - davidic_in_mt_only: Davidic attribution in MT but not LXX
+        - davidic_in_lxx_only: Davidic attribution in LXX but not MT
+        - davidic_in_both: Davidic in both
+    """
+    psalms = session.exec(select(Psalm)).all()
+    greek_texts = session.exec(select(GreekText)).all()
+
+    heading_agreements = sum(1 for gt in greek_texts if gt.heading_agrees_with_mt)
+    heading_differences = sum(1 for gt in greek_texts if not gt.heading_agrees_with_mt)
+
+    # Count Davidic attributions
+    davidic_in_both = 0
+    davidic_in_mt_only = 0
+    davidic_in_lxx_only = 0
+
+    for psalm in psalms:
+        mt_davidic = psalm.author_attribution == "David"
+        greek_text = get_greek_text(session, psalm.id)
+
+        if greek_text:
+            lxx_davidic = greek_text.davidic_attribution_lxx
+
+            if mt_davidic and lxx_davidic:
+                davidic_in_both += 1
+            elif mt_davidic and not lxx_davidic:
+                davidic_in_mt_only += 1
+            elif not mt_davidic and lxx_davidic:
+                davidic_in_lxx_only += 1
+
+    return {
+        "psalms_with_greek_text": len(greek_texts),
+        "heading_agreements": heading_agreements,
+        "heading_differences": heading_differences,
+        "davidic_in_both": davidic_in_both,
+        "davidic_in_mt_only": davidic_in_mt_only,
+        "davidic_in_lxx_only": davidic_in_lxx_only,
+        "total_davidic_mt": davidic_in_both + davidic_in_mt_only,
+        "total_davidic_lxx": davidic_in_both + davidic_in_lxx_only,
+    }
+
+
+def seed_alignment_table(session: Session):
+    """
+    Populate the psalm_number_alignments table with all 150 MT psalms.
+    This should be called once during database initialization.
+    """
+    from lxx_alignment import get_all_alignments
+
+    # Check if already populated
+    existing = session.exec(select(PsalmNumberAlignment)).first()
+    if existing:
+        return
+
+    alignments = get_all_alignments()
+    for mt_num, lxx_num, alignment_type, notes in alignments:
+        alignment = PsalmNumberAlignment(
+            mt_psalm_number=mt_num,
+            lxx_psalm_number=lxx_num,
+            alignment_type=alignment_type,
+            notes=notes
+        )
+        session.add(alignment)
+
+    session.commit()
+    print(f"✓ Seeded {len(alignments)} psalm number alignments")
