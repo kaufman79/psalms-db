@@ -68,6 +68,7 @@ class Psalm(SQLModel, table=True):
     # Relationships
     psalm_genres: List[PsalmGenre] = Relationship(back_populates="psalm")
     greek_texts: List["GreekText"] = Relationship(back_populates="psalm")
+    textual_witnesses: List["TextualWitness"] = Relationship(back_populates="psalm")
 
     @property
     def genres(self) -> List[str]:
@@ -148,3 +149,52 @@ class PsalmNumberAlignment(SQLModel, table=True):
     lxx_psalm_number: str = Field(index=True)
     alignment_type: str = Field(index=True)  # "exact", "combined", "split", "offset"
     notes: Optional[str] = Field(default=None)
+
+
+class TextualWitness(SQLModel, table=True):
+    """Textual witnesses for Psalms superscriptions (Vulgate, Peshitta, Targum, etc.)"""
+    __tablename__ = "textual_witnesses"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    # Witness identification
+    tradition: str = Field(index=True)  # "Vulgate", "Peshitta", "Targum"
+    language: str = Field(index=True)  # "Latin", "Syriac", "Aramaic"
+    edition: Optional[str] = Field(default=None)  # e.g., "Nova Vulgata", "Leiden"
+
+    # Link to MT psalm
+    mt_psalm_id: int = Field(foreign_key="psalms.id", index=True)
+    mt_psalm_number: int = Field(index=True)
+
+    # Superscription in original language
+    original_text: Optional[str] = Field(default=None)
+    english_translation: Optional[str] = Field(default=None)
+
+    # Authorship attribution
+    has_author_attribution: bool = Field(default=False)
+    author_attribution: Optional[str] = Field(default=None)
+    davidic_attribution: bool = Field(default=False)
+
+    # Musical/liturgical terms
+    musical_terms: Optional[str] = Field(default=None)
+
+    # Historical superscription
+    historical_note: Optional[str] = Field(default=None)
+
+    # Genre/type designation
+    genre_designation: Optional[str] = Field(default=None)
+
+    # Comparison with MT
+    agrees_with_mt: bool = Field(default=True)
+    differences_from_mt: Optional[str] = Field(default=None)
+
+    # Text-critical notes
+    textual_notes: Optional[str] = Field(default=None)
+    scholarly_significance: Optional[str] = Field(default=None)
+
+    # Timestamps
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Relationships
+    psalm: Psalm = Relationship(back_populates="textual_witnesses")
