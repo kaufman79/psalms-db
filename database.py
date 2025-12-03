@@ -4,7 +4,7 @@ Database initialization and session management.
 from sqlmodel import create_engine, SQLModel, Session, select
 from typing import Generator, List, Optional
 from pathlib import Path
-from models import Psalm, Genre, PsalmGenre, GreekText, PsalmNumberAlignment
+from models import Psalm, Genre, PsalmGenre, GreekText, PsalmNumberAlignment, TextualWitness
 
 # Database path
 DB_PATH = Path(__file__).parent / "psalms.db"
@@ -319,3 +319,161 @@ def seed_alignment_table(session: Session):
 
     session.commit()
     print(f"✓ Seeded {len(alignments)} psalm number alignments")
+
+
+def get_all_psalms(session: Session) -> List[Psalm]:
+    """Get all psalms ordered by psalm number"""
+    return session.exec(select(Psalm).order_by(Psalm.psalm_number)).all()
+
+
+# ========================================
+# Textual Witness Functions
+# ========================================
+
+def add_textual_witness(
+    session: Session,
+    mt_psalm_id: int,
+    tradition: str,
+    witness_data: dict
+) -> TextualWitness:
+    """
+    Add a textual witness (Vulgate, Peshitta, Targum, etc.) for a psalm.
+
+    Args:
+        session: Database session
+        mt_psalm_id: ID of the MT psalm
+        tradition: Name of the textual tradition (e.g., "Vulgate", "Peshitta")
+        witness_data: Dictionary with witness fields
+
+    Returns:
+        Created TextualWitness object
+    """
+    witness = TextualWitness(
+        mt_psalm_id=mt_psalm_id,
+        tradition=tradition,
+        **witness_data
+    )
+    session.add(witness)
+    session.commit()
+    session.refresh(witness)
+    return witness
+
+
+def get_textual_witnesses(session: Session, mt_psalm_id: int) -> List[TextualWitness]:
+    """Get all textual witnesses for a given MT psalm ID"""
+    return session.exec(
+        select(TextualWitness).where(TextualWitness.mt_psalm_id == mt_psalm_id)
+    ).all()
+
+
+def get_textual_witness_by_tradition(
+    session: Session,
+    mt_psalm_id: int,
+    tradition: str
+) -> Optional[TextualWitness]:
+    """Get a specific textual witness by tradition (e.g., Vulgate)"""
+    return session.exec(
+        select(TextualWitness).where(
+            TextualWitness.mt_psalm_id == mt_psalm_id,
+            TextualWitness.tradition == tradition
+        )
+    ).first()
+
+
+def get_all_traditions(session: Session) -> List[str]:
+    """Get unique list of all textual traditions in the database"""
+    witnesses = session.exec(select(TextualWitness)).all()
+    traditions = set(w.tradition for w in witnesses)
+    return sorted(list(traditions))
+
+
+def get_witness_statistics(session: Session) -> dict:
+    """
+    Generate statistics for textual witnesses.
+
+    Returns dict with statistics per tradition and comparisons with MT.
+    """
+    witnesses = session.exec(select(TextualWitness)).all()
+
+    if not witnesses:
+        return {
+            "total_witnesses": 0,
+            "traditions": {},
+        }
+
+    # Count by tradition
+    tradition_stats = {}
+    for witness in witnesses:
+        tradition = witness.tradition
+        if tradition not in tradition_stats:
+            tradition_stats[tradition] = {
+                "total": 0,
+                "with_superscription": 0,
+                "without_superscription": 0,
+                "with_author": 0,
+                "davidic": 0,
+                "agrees_with_mt": 0,
+                "differs_from_mt": 0,
+            }
+
+        stats = tradition_stats[tradition]
+        stats["total"] += 1
+
+        if witness.original_text:
+            stats["with_superscription"] += 1
+        else:
+            stats["without_superscription"] += 1
+
+        if witness.has_author_attribution:
+            stats["with_author"] += 1
+
+        if witness.davidic_attribution:
+            stats["davidic"] += 1
+
+        if witness.agrees_with_mt:
+            stats["agrees_with_mt"] += 1
+        else:
+            stats["differs_from_mt"] += 1
+
+    return {
+        "total_witnesses": len(witnesses),
+        "traditions": tradition_stats,
+    }
+
+
+def get_text_critical_comparison(session: Session, mt_psalm_number: int) -> dict:
+    """
+    Get a text-critical comparison for a specific psalm showing all witnesses.
+
+    Args:
+        session: Database session
+        mt_psalm_number: MT psalm number (1-150)
+
+    Returns:
+        Dictionary with MT, LXX, and all textual witnesses for comparison
+    """
+    # Get the psalm
+    psalm = session.exec(
+        select(Psalm).where(Psalm.psalm_number == mt_psalm_number)
+    ).first()
+
+    if not psalm:
+        return None
+
+    # Get Greek text
+    greek_text = get_greek_text(session, psalm.id)
+
+    # Get all textual witnesses
+    witnesses = get_textual_witnesses(session, psalm.id)
+
+    # Organize by tradition
+    witnesses_by_tradition = {}
+    for witness in witnesses:
+        witnesses_by_tradition[witness.tradition] = witness
+
+    return {
+        "mt_psalm_number": mt_psalm_number,
+        "psalm": psalm,
+        "greek_text": greek_text,
+        "witnesses": witnesses_by_tradition,
+    }

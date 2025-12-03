@@ -12,9 +12,10 @@ import io
 from database import (
     engine, init_db, search_psalms, get_all_authors,
     get_all_genres, get_all_musical_terms, get_statistics,
-    get_greek_text, get_lxx_statistics
+    get_greek_text, get_lxx_statistics, get_textual_witnesses,
+    get_witness_statistics
 )
-from models import Psalm, GreekText
+from models import Psalm, GreekText, TextualWitness
 from lxx_alignment import format_dual_number
 
 
@@ -42,6 +43,14 @@ st.markdown("""
         font-family: 'Times New Roman', 'Galatia SIL', 'Gentium', serif;
         color: #047857;
         line-height: 1.8;
+    }
+    .latin-text {
+        direction: ltr;
+        font-size: 1.2em;
+        font-family: 'Times New Roman', 'Palatino Linotype', serif;
+        color: #92400e;
+        line-height: 1.8;
+        font-style: italic;
     }
     .comparison-box {
         background-color: #f0fdf4;
@@ -305,6 +314,9 @@ def detail_page():
         # Get Greek text if available
         greek_text = get_greek_text(session, psalm.id)
 
+        # Get all textual witnesses
+        witnesses = get_textual_witnesses(session, psalm.id)
+
         # Header with dual numbering
         if greek_text:
             st.title(f"Psalm {psalm.psalm_number} (LXX {greek_text.lxx_psalm_number})")
@@ -353,6 +365,73 @@ def detail_page():
                         st.markdown(f"**LXX:** {'✅ Davidic' if lxx_davidic else '❌ Not Davidic'}")
             else:
                 st.caption("*No superscription in LXX*")
+
+        # Textual Witnesses section (Vulgate, Peshitta, Targum, etc.)
+        if witnesses:
+            st.markdown("---")
+            st.markdown('<h3 class="section-header">📚 Other Ancient Witnesses</h3>', unsafe_allow_html=True)
+
+            for witness in witnesses:
+                # Icon and label based on tradition
+                tradition_icons = {
+                    "Vulgate": "🇻🇦",
+                    "Peshitta": "🇸🇾",
+                    "Targum": "🕍",
+                }
+                icon = tradition_icons.get(witness.tradition, "📜")
+
+                st.markdown(f"#### {icon} {witness.tradition} ({witness.language})")
+
+                if witness.edition:
+                    st.caption(f"*Edition: {witness.edition}*")
+
+                if witness.original_text:
+                    # Display original text based on language
+                    if witness.language == "Latin":
+                        st.markdown(f'<div class="latin-text">{witness.original_text}</div>', unsafe_allow_html=True)
+                    elif witness.language == "Greek":
+                        st.markdown(f'<div class="greek-text">{witness.original_text}</div>', unsafe_allow_html=True)
+                    elif witness.language in ["Syriac", "Aramaic"]:
+                        # For Syriac/Aramaic, just display as normal text (could be RTL if needed)
+                        st.markdown(f'<div style="font-size: 1.2em; line-height: 1.8;">{witness.original_text}</div>', unsafe_allow_html=True)
+                    else:
+                        st.write(witness.original_text)
+
+                    if witness.english_translation:
+                        st.caption(f"*Translation: {witness.english_translation}*")
+
+                    # Show agreement/difference indicator
+                    if witness.agrees_with_mt:
+                        st.markdown('<div class="comparison-box">✅ <strong>Agrees with MT</strong></div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown('<div class="diff-box">⚠️ <strong>Differs from MT</strong></div>', unsafe_allow_html=True)
+                        if witness.differences_from_mt:
+                            st.info(f"**Differences:** {witness.differences_from_mt}")
+
+                    # Show authorship comparison if different
+                    if witness.author_attribution:
+                        mt_author = psalm.author_attribution
+                        witness_author = witness.author_attribution
+
+                        if mt_author != witness_author:
+                            st.markdown(f"**Attribution:** {witness_author} (MT: {mt_author or 'None'})")
+
+                    # Show musical terms if present
+                    if witness.musical_terms:
+                        st.markdown(f"**Musical/Liturgical Terms:** {witness.musical_terms}")
+
+                    # Show historical note if present
+                    if witness.historical_note:
+                        st.markdown(f"**Historical Context:** {witness.historical_note}")
+
+                    # Show textual notes if present
+                    if witness.textual_notes:
+                        with st.expander("📝 Text-Critical Notes"):
+                            st.write(witness.textual_notes)
+                else:
+                    st.caption("*No superscription in this witness*")
+
+                st.markdown("")  # Spacing
 
         # Metadata columns
         st.markdown('<h3 class="section-header">Metadata</h3>', unsafe_allow_html=True)
@@ -543,6 +622,59 @@ def statistics_page():
             st.caption(f"LXX adds David to {lxx_stats.get('davidic_in_lxx_only', 0)} additional psalms")
 
         st.markdown("---")
+
+        # Textual Witness Statistics
+        witness_stats = get_witness_statistics(session)
+
+        if witness_stats["total_witnesses"] > 0:
+            st.markdown("## Textual Witnesses Comparison")
+            st.caption("*Ancient versions for text-critical analysis*")
+
+            # Statistics by tradition
+            traditions = witness_stats["traditions"]
+
+            cols = st.columns(len(traditions))
+            for idx, (tradition, stats) in enumerate(traditions.items()):
+                with cols[idx]:
+                    st.markdown('<div class="stat-box">', unsafe_allow_html=True)
+                    st.markdown(f"### {tradition}")
+                    st.metric("Total Psalms", stats["total"])
+                    st.metric("With Superscription", stats["with_superscription"])
+                    st.metric("Davidic", stats["davidic"])
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+            # Detailed comparison table
+            st.markdown("### Tradition Comparison")
+
+            comparison_data = []
+            for tradition, stats in traditions.items():
+                comparison_data.append({
+                    "Tradition": tradition,
+                    "Total": stats["total"],
+                    "With Superscription": stats["with_superscription"],
+                    "Davidic": stats["davidic"],
+                    "Agrees with MT": stats["agrees_with_mt"],
+                    "Differs from MT": stats["differs_from_mt"],
+                })
+
+            comparison_df = pd.DataFrame(comparison_data)
+            st.dataframe(comparison_df, hide_index=True, use_container_width=True)
+
+            # Multi-witness Davidic comparison
+            st.markdown("### Davidic Attribution Across Witnesses")
+
+            davidic_data = {
+                "MT": stats.get("author_counts", {}).get("David", 0),
+                "LXX": lxx_stats.get("total_davidic_lxx", 0),
+            }
+
+            for tradition, stats in traditions.items():
+                davidic_data[tradition] = stats["davidic"]
+
+            davidic_df = pd.DataFrame(list(davidic_data.items()), columns=["Witness", "Davidic Psalms"])
+            st.bar_chart(davidic_df.set_index("Witness"))
+
+            st.markdown("---")
 
         # Interesting queries
         st.markdown("## Quick Insights")
